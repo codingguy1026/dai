@@ -4,15 +4,15 @@ import { useEffect, useRef, useState } from "react";
 
 type Message = { id: string; role: "user" | "assistant"; text: string; at: number };
 type Chat = { id: string; title: string; updated: number; messages: Message[] };
-type Mode = "ai" | "demo" | "offline";
+type Connection = "online" | "preview" | "offline";
 const KEY = "dai.chat.v1";
 const ACTIVE = "dai.active.v1";
 const THEME = "dai.theme.v1";
 const suggestions = [
-  { emoji: "🎧", title: "음악 이야기", detail: "오늘의 노래 추천", prompt: "오늘 기분에 맞는 음악 추천해줘!" },
-  { emoji: "✨", title: "상상력 폭발", detail: "새로운 아이디어", prompt: "재미있는 사이드 프로젝트 아이디어를 알려줘!" },
-  { emoji: "📚", title: "같이 공부해", detail: "어려운 것도 차근차근", prompt: "영어 공부를 도와줘!" },
-  { emoji: "💻", title: "개발 도우미", detail: "코딩 고민 해결", prompt: "Next.js로 만들 작은 프로젝트 아이디어를 줘!" }
+  { emoji: "🎧", title: "음악 추천", detail: "취향에 맞는 음악 탐색", prompt: "집중할 때 듣기 좋은 음악 5곡을 추천하고 이유도 알려줘." },
+  { emoji: "🪐", title: "유니버스 가이드", detail: "Drawing Verse 탐색", prompt: "Drawing Verse에서 관심사에 맞는 유니버스를 찾는 방법을 알려줘." },
+  { emoji: "📚", title: "학습 도우미", detail: "개념과 예제 정리", prompt: "영어 공부를 위한 간단한 학습 계획을 세워줘." },
+  { emoji: "💻", title: "개발 도우미", detail: "코드와 문제 해결", prompt: "Next.js와 TypeScript로 만들 작은 프로젝트 아이디어를 제안해줘." }
 ];
 const makeId = () => typeof crypto !== "undefined" && "randomUUID" in crypto
   ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(36).slice(2);
@@ -33,7 +33,8 @@ export default function Home() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">("light");
-  const [mode, setMode] = useState<Mode>("offline");
+  const [connection, setConnection] = useState<Connection>("offline");
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -58,9 +59,10 @@ export default function Home() {
     } catch { /* Corrupted local storage: start fresh */ }
     setLoaded(true);
     fetch("/api/chat", { cache: "no-store" })
-      .then(r => r.json()).then((data: { mode?: string }) =>
-        setMode(data.mode === "ai" ? "ai" : "demo"))
-      .catch(() => setMode("offline"));
+      .then(r => { if (!r.ok) throw new Error("status check failed"); return r.json(); })
+      .then((data: { source?: string }) =>
+        setConnection(data.source === "openai" ? "online" : "preview"))
+      .catch(() => setConnection("offline"));
   }, []);
 
   useEffect(() => {
@@ -78,12 +80,12 @@ export default function Home() {
     [activeId, active?.messages.length, busy]);
 
   function newChat() {
-    setActiveId(null); setInput(""); setError(""); setSidebar(false);
+    setActiveId(null); setInput(""); setError(""); setCopiedId(null); setSidebar(false);
     composer.current?.focus();
   }
 
   function selectChat(id: string) {
-    setActiveId(id); setError(""); setSidebar(false);
+    setActiveId(id); setError(""); setCopiedId(null); setSidebar(false);
   }
 
   function deleteChat(id: string) {
@@ -97,6 +99,15 @@ export default function Home() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = "dai-chats.json"; a.click();
     URL.revokeObjectURL(url);
+  }
+
+  async function copyMessage(message: Message) {
+    try {
+      await navigator.clipboard.writeText(message.text);
+      setCopiedId(message.id);
+    } catch {
+      setError("답변을 복사하지 못했습니다. 브라우저의 클립보드 권한을 확인해 주세요.");
+    }
   }
 
   async function send(preset?: string, retry = false) {
@@ -121,7 +132,7 @@ export default function Home() {
       });
       setActiveId(chatId); setInput("");
     }
-    setError(""); setBusy(true);
+    setError(""); setCopiedId(null); setBusy(true);
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
@@ -130,14 +141,15 @@ export default function Home() {
           messages: next.slice(-16).map(m => ({ role: m.role, content: m.text }))
         })
       });
-      const data = await response.json() as { reply?: string; error?: string; mode?: Mode };
-      if (!response.ok || !data.reply) throw new Error(data.error || "답변을 받지 못했어.");
+      const data = await response.json() as { reply?: string; error?: string; source?: "openai" | "preview" };
+      if (!response.ok || !data.reply) throw new Error(data.error || "답변을 받지 못했습니다.");
       const reply: Message = { id: makeId(), role: "assistant", text: data.reply, at: Date.now() };
       setChats(old => old.map(c => c.id === chatId
         ? { ...c, updated: Date.now(), messages: [...c.messages, reply] } : c));
-      if (data.mode === "ai" || data.mode === "demo") setMode(data.mode);
+      if (data.source === "openai" || data.source === "preview")
+        setConnection(data.source === "openai" ? "online" : "preview");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "연결에 문제가 생겼어.");
+      setError(e instanceof Error ? e.message : "연결에 문제가 발생했습니다.");
     } finally { setBusy(false); }
   }
 
@@ -145,11 +157,11 @@ export default function Home() {
     <div className="app-shell">
       {sidebar && <button className="overlay" onClick={() => setSidebar(false)} aria-label="메뉴 닫기"/>}
       <aside className={sidebar ? "sidebar open" : "sidebar"}>
-        <div className="brand"><DaiFace small/><div><b>Dai</b><small>your little AI friend</small></div></div>
+        <div className="brand"><DaiFace small/><div><b>Dai</b><small>Drawing AI</small></div></div>
         <button className="new-chat" onClick={newChat}><span>＋</span> 새 대화 시작</button>
         <div className="side-caption">대화 기록 <span>{chats.length}</span></div>
         <div className="chat-list">
-          {chats.length === 0 && <p className="empty-history">아직 대화가 없어.<br/>다이와 첫 인사를 해볼까? 💜</p>}
+          {chats.length === 0 && <p className="empty-history">대화 기록이 없습니다.<br/>새 대화를 시작해 보세요.</p>}
           {chats.map(c => (
             <div key={c.id} className={activeId === c.id ? "history active" : "history"}>
               <button onClick={() => selectChat(c.id)} title={c.title}>
@@ -174,11 +186,11 @@ export default function Home() {
         <header className="topbar">
           <div className="top-left">
             <button className="menu" onClick={() => setSidebar(true)} aria-label="메뉴 열기">☰</button>
-            <span className="top-name">🎀 Dai <span className="version">v0.1</span></span>
+            <span className="top-name">Dai <span className="version">v0.2</span></span>
           </div>
-          <div className={"status " + mode}>
+          <div className={"status " + connection}>
             <span className="status-dot"/>
-            {mode === "ai" ? "AI 연결됨" : mode === "demo" ? "체험 모드" : "연결 확인 중"}
+            {connection === "online" ? "AI 설정됨" : connection === "preview" ? "예시 응답" : "연결 확인 필요"}
           </div>
         </header>
 
@@ -187,9 +199,9 @@ export default function Home() {
             <section className="welcome">
               <div className="sparkle s1">✦</div><div className="sparkle s2">✧</div>
               <DaiFace/>
-              <div className="welcome-tag">A LITTLE BIT OF MAGIC ✨</div>
-              <h1>안녕! 나는 <em>다이</em>야 🎀</h1>
-              <p>궁금한 건 뭐든 물어봐!<br/>재밌는 상상도, 공부도, 코딩도 함께해줄게. (๑˃ᴗ˂)ﻭ</p>
+              <div className="welcome-tag">DRAWING AI</div>
+              <h1>안녕하세요, <em>다이</em>입니다.</h1>
+              <p>공부, 개발, 음악 추천부터 일상적인 질문까지<br/>필요한 내용을 편하게 물어보세요.</p>
               <div className="suggestions">
                 {suggestions.map(s => <button key={s.title} className="suggest"
                   onClick={() => send(s.prompt)} disabled={busy}>
@@ -203,7 +215,13 @@ export default function Home() {
               {active.messages.map(m => (
                 <div className={"message-row " + m.role} key={m.id}>
                   {m.role === "assistant" && <DaiFace small/>}
-                  <div className="bubble">{m.text}</div>
+                  <div className="message-column">
+                    <div className="bubble">{m.text}</div>
+                    {m.role === "assistant" && <button type="button" className="copy-reply"
+                      onClick={() => copyMessage(m)}>
+                      {copiedId === m.id ? "복사됨" : "답변 복사"}
+                    </button>}
+                  </div>
                 </div>
               ))}
               {busy && <div className="message-row assistant"><DaiFace small/>
@@ -217,18 +235,18 @@ export default function Home() {
         </div>
 
         <div className="composer-wrap">
-          {mode === "demo" && <div className="demo-notice">
-            ✨ 현재는 예시 답변을 보여주는 체험 모드야. 실제 AI를 연결하려면 서버 설정이 필요해.
+          {connection === "preview" && <div className="demo-notice">
+            현재 AI API가 연결되지 않아 정해진 예시 답변을 보여줍니다.
           </div>}
           <form className="composer" onSubmit={e => { e.preventDefault(); send(); }}>
             <textarea ref={composer} value={input} maxLength={2000}
               onChange={e => setInput(e.target.value)}
               onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-              rows={1} placeholder="다이에게 무엇이든 물어봐..." aria-label="메시지 입력"/>
+              rows={1} placeholder="다이에게 메시지 보내기" aria-label="메시지 입력"/>
             <button className="send" type="submit" aria-label="메시지 보내기"
               disabled={busy || !input.trim()}>{busy ? "···" : "↑"}</button>
           </form>
-          <small className="footer-note">다이는 실수할 수 있어. 중요한 정보는 다시 확인해줘! ♡</small>
+          <small className="footer-note">AI 답변에는 오류가 있을 수 있습니다. 중요한 정보는 다시 확인해 주세요.</small>
         </div>
       </main>
     </div>
