@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@supabase/supabase-js": "2.105.1",
     "next": "16.4.3",
     "react": "19.2.0",
     "react-dom": "19.2.0"
@@ -19,5 +20,7 @@
     "@types/react-dom": "^19.2.0",
     "typescript": "^5.9.0"
   },
-  "engines": { "node": ">=20.9.0" }
+  "engines": {
+    "node": ">=20.9.0"
+  }
 }

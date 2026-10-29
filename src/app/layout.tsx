@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "./drawing-id.css";
+import DrawingIdAuth from "@/components/DrawingIdAuth";
 
 export const metadata: Metadata = {
   title: "Dai | Drawing AI",
@@ -10,7 +12,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="ko">
-      <body>{children}</body>
+      <body>{children}<DrawingIdAuth /></body>
     </html>
   );
 }
