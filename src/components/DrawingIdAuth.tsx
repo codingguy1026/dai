@@ -1,9 +1,9 @@
 "use client";
 import {useEffect,useState} from "react";
-import {createClient} from "@supabase/supabase-js";
+import {createBrowserClient} from "@supabase/ssr";
 const url=process.env.NEXT_PUBLIC_SUPABASE_URL;
 const key=process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
-const db=url&&key?createClient(url,key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}}):null;
+const db=url&&key?createBrowserClient(url,key):null;
 export default function DrawingIdAuth({inline=false}){
  const [user,setUser]=useState({email:"",logged:false});
  const [open,setOpen]=useState(false),[mode,setMode]=useState("login"),[email,setEmail]=useState(""),[password,setPassword]=useState(""),[message,setMessage]=useState(""),[busy,setBusy]=useState(false);
@@ -24,7 +24,7 @@ export default function DrawingIdAuth({inline=false}){
     <div className="di-logo">D.</div><h2 id="di-title">Drawing ID</h2><p className="di-note">하나의 계정으로 모든 Drawing 서비스를 이용하세요.</p>
     {!db?<p className="di-msg">인증 서버 연결이 설정되지 않았어요. 운영자에게 문의해 주세요.</p>
     :user.logged?<div className="di-account"><strong>✅ 로그인 완료</strong><p>{user.email||"Drawing ID"}</p><button type="button" onClick={logout} disabled={busy} className="di-submit">이 서비스에서 로그아웃</button></div>
-    :<><div className="di-tabs">
+    :<>{process.env.NEXT_PUBLIC_DRAWING_SSO_ENABLED === "true" && <a href="/api/drawing-id/start" className="di-submit" style={{display:"block",textDecoration:"none",marginBottom:14}}>🔐 Drawing ID로 계속하기 →</a>}<div className="di-tabs">
       <button type="button" className={mode==="login"?"active":""} onClick={()=>{setMode("login");setMessage("")}}>로그인</button>
       <button type="button" className={mode==="signup"?"active":""} onClick={()=>{setMode("signup");setMessage("")}}>회원가입</button>
      </div><form className="di-form" onSubmit={async e=>{
