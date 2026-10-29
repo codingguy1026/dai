@@ -32,8 +32,9 @@ function equalStates(a: string, b: string) {
 function finish(origin: string, success: boolean) {
   const result = NextResponse.redirect(new URL(success ? "/?drawing_id=connected" : "/?drawing_id=failed", origin));
   result.headers.set("Cache-Control", "private, no-store");
-  result.cookies.delete("drawing_sso_state");
-  result.cookies.delete("drawing_sso_verifier");
+  const expired = { httpOnly: true, sameSite: "lax" as const, path: "/api/drawing-id", maxAge: 0, secure: origin.startsWith("https:") };
+  result.cookies.set("drawing_sso_state", "", expired);
+  result.cookies.set("drawing_sso_verifier", "", expired);
   return result;
 }
 export async function startDrawingSSO() {
