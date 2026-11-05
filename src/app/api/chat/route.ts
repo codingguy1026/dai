@@ -18,8 +18,11 @@ const SYSTEM_PROMPT = [
   "Respect privacy and provide age-appropriate, safe guidance."
 ].join(" ");
 
-// Trial only. Keep production in preview mode until authentication, request limits,
-// and billing safeguards are implemented. A token alone never enables paid calls.
+// Trial only. Keep production in preview mode until authentication, persistent
+// request limits, and billing safeguards are implemented. A token alone never enables paid calls.
+// This best-effort in-memory cap resets on server restart and is NOT a billing cap.
+let trialCalls = 0;
+const TRIAL_CALL_LIMIT = 3;
 function isTrialEnabled(): boolean {
   return process.env.NODE_ENV !== "production" &&
     process.env.DAI_ENABLE_HF_API === "true" &&
@@ -53,6 +56,11 @@ export async function POST(request: Request) {
     { reply: getDemoReply(recent[recent.length - 1].content), source: "preview" },
     { headers: { "Cache-Control": "no-store" } }
   );
+
+  if (trialCalls >= TRIAL_CALL_LIMIT) return NextResponse.json(
+    { error: "시험 모드의 서버 실행당 요청 제한(3회)에 도달했습니다." }, { status: 429 }
+  );
+  trialCalls += 1;
 
   try {
     const result = await fetch("https://router.huggingface.co/v1/chat/completions", {
