@@ -84,9 +84,11 @@ export async function POST(request: Request) {
           ? "Hugging Face 요청 한도에 도달했습니다. 이용 한도를 확인해 주세요."
           : result.status === 401 || result.status === 403
             ? "Hugging Face 토큰과 Inference Providers 권한을 확인해 주세요."
-            : result.status === 400 || result.status === 404
-              ? "선택한 Hugging Face 모델을 사용할 수 없습니다. HF_MODEL 설정을 확인해 주세요."
-              : "Hugging Face AI 서버 응답 오류 (" + result.status + ")";
+            : result.status === 400
+              ? "Hugging Face가 요청을 거절했습니다(400). 모델 ID 또는 요청 형식이 맞는지 확인해 주세요."
+              : result.status === 404
+                ? "Hugging Face가 모델 또는 엔드포인트를 찾지 못했습니다(404). HF_MODEL 설정을 확인해 주세요."
+                : "Hugging Face AI 서버 응답 오류 (" + result.status + ")";
       return NextResponse.json({ error: reason }, { status: 502 });
     }
     const data = await result.json() as { choices?: { message?: { content?: string } }[] };
