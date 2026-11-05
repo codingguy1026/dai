@@ -61,7 +61,7 @@ export default function Home() {
     fetch("/api/chat", { cache: "no-store" })
       .then(r => { if (!r.ok) throw new Error("status check failed"); return r.json(); })
       .then((data: { source?: string }) =>
-        setConnection(data.source === "openai" ? "online" : "preview"))
+        setConnection(data.source === "huggingface" ? "online" : "preview"))
       .catch(() => setConnection("offline"));
   }, []);
 
@@ -141,13 +141,13 @@ export default function Home() {
           messages: next.slice(-16).map(m => ({ role: m.role, content: m.text }))
         })
       });
-      const data = await response.json() as { reply?: string; error?: string; source?: "openai" | "preview" };
+      const data = await response.json() as { reply?: string; error?: string; source?: "huggingface" | "preview" };
       if (!response.ok || !data.reply) throw new Error(data.error || "답변을 받지 못했습니다.");
       const reply: Message = { id: makeId(), role: "assistant", text: data.reply, at: Date.now() };
       setChats(old => old.map(c => c.id === chatId
         ? { ...c, updated: Date.now(), messages: [...c.messages, reply] } : c));
-      if (data.source === "openai" || data.source === "preview")
-        setConnection(data.source === "openai" ? "online" : "preview");
+      if (data.source === "huggingface" || data.source === "preview")
+        setConnection(data.source === "huggingface" ? "online" : "preview");
     } catch (e) {
       setError(e instanceof Error ? e.message : "연결에 문제가 발생했습니다.");
     } finally { setBusy(false); }
@@ -190,7 +190,7 @@ export default function Home() {
           </div>
           <div className={"status " + connection}>
             <span className="status-dot"/>
-            {connection === "online" ? "AI 설정됨" : connection === "preview" ? "예시 응답" : "연결 확인 필요"}
+            {connection === "online" ? "Hugging Face 시험 연결" : connection === "preview" ? "예시 응답" : "연결 확인 필요"}
           </div>
         </header>
 
