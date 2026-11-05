@@ -148,8 +148,9 @@ export async function POST(request: Request) {
   const reserve: Reserve | NextResponse = process.env.NODE_ENV === "production"
     ? await productionReserve() : localReserve();
   if (reserve instanceof NextResponse) return reserve;
+  const reserveCall: Reserve = reserve;
   async function attempt(model: string): Promise<Attempt> {
-    return await reserve() ? askGemini(model, recent) : { status: 429 };
+    return await reserveCall() ? askGemini(model, recent) : { status: 429 };
   }
   let result = await attempt(primary!);
   let fallbackUsed = false;
