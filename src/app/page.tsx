@@ -2,9 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 
-type Message = { id: string; role: "user" | "assistant"; text: string; at: number };
+type Message = { id: string; role: "user" | "assistant"; text: string; at: number; viaFallback?: boolean };
 type Chat = { id: string; title: string; updated: number; messages: Message[] };
 type Connection = "online" | "preview" | "offline";
+type ChatError = { chatId: string; text: string; temporary: boolean };
 const KEY = "dai.chat.v1";
 const ACTIVE = "dai.active.v1";
 const THEME = "dai.theme.v1";
@@ -37,7 +38,7 @@ export default function Home() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<ChatError | null>(null);
   const [sidebar, setSidebar] = useState(false);
   const end = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
@@ -80,18 +81,18 @@ export default function Home() {
     [activeId, active?.messages.length, busy]);
 
   function newChat() {
-    setActiveId(null); setInput(""); setError(""); setCopiedId(null); setSidebar(false);
+    setActiveId(null); setInput(""); setError(null); setCopiedId(null); setSidebar(false);
     composer.current?.focus();
   }
 
   function selectChat(id: string) {
-    setActiveId(id); setError(""); setCopiedId(null); setSidebar(false);
+    setActiveId(id); setError(null); setCopiedId(null); setSidebar(false);
   }
 
   function deleteChat(id: string) {
     setChats(old => old.filter(c => c.id !== id));
     if (activeId === id) setActiveId(null);
-    setError("");
+    setError(null);
   }
 
   function exportChats() {
@@ -106,19 +107,21 @@ export default function Home() {
       await navigator.clipboard.writeText(message.text);
       setCopiedId(message.id);
     } catch {
-      setError("답변을 복사하지 못했습니다. 브라우저의 클립보드 권한을 확인해 주세요.");
+      setError({ chatId: activeId || "", text: "답변을 복사하지 못했습니다. 브라우저의 클립보드 권한을 확인해 주세요.", temporary: false });
     }
   }
 
   async function send(preset?: string, retry = false) {
     if (busy) return;
-    const text = retry ? active?.messages[active.messages.length - 1]?.text?.trim() :
-      (preset ?? input).trim();
+    const before = active?.messages || [];
+    const last = before.at(-1);
+    // Retry only a pending user message; never resubmit an assistant's reply.
+    if (retry && (last?.role !== "user" || !activeId)) return;
+    const text = retry ? last?.text.trim() : (preset ?? input).trim();
     if (!text || text.length > 2000) return;
     const chatId = activeId || makeId();
     const now = Date.now();
     const userMessage: Message = { id: makeId(), role: "user", text, at: now };
-    const before = active?.messages || [];
     const next = retry ? before : [...before, userMessage];
 
     if (!retry) {
@@ -132,7 +135,7 @@ export default function Home() {
       });
       setActiveId(chatId); setInput("");
     }
-    setError(""); setCopiedId(null); setBusy(true);
+    setError(null); setCopiedId(null); setBusy(true);
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
@@ -141,15 +144,30 @@ export default function Home() {
           messages: next.slice(-16).map(m => ({ role: m.role, content: m.text }))
         })
       });
-      const data = await response.json() as { reply?: string; error?: string; source?: "huggingface" | "preview" };
-      if (!response.ok || !data.reply) throw new Error(data.error || "답변을 받지 못했습니다.");
-      const reply: Message = { id: makeId(), role: "assistant", text: data.reply, at: Date.now() };
+      const data = await response.json() as {
+        reply?: string; error?: string; code?: string;
+        source?: "huggingface" | "preview"; fallbackUsed?: boolean
+      };
+      if (!response.ok || !data.reply) {
+        setError({
+          chatId, text: data.error || "답변을 받지 못했습니다.",
+          temporary: response.status === 503 || data.code === "high_demand"
+        });
+        return;
+      }
+      const reply: Message = {
+        id: makeId(), role: "assistant", text: data.reply, at: Date.now(),
+        viaFallback: data.fallbackUsed === true
+      };
       setChats(old => old.map(c => c.id === chatId
         ? { ...c, updated: Date.now(), messages: [...c.messages, reply] } : c));
       if (data.source === "huggingface" || data.source === "preview")
         setConnection(data.source === "huggingface" ? "online" : "preview");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "연결에 문제가 발생했습니다.");
+      setError({
+        chatId, text: e instanceof Error ? e.message : "연결에 문제가 발생했습니다.",
+        temporary: false
+      });
     } finally { setBusy(false); }
   }
 
@@ -221,13 +239,21 @@ export default function Home() {
                       onClick={() => copyMessage(m)}>
                       {copiedId === m.id ? "복사됨" : "답변 복사"}
                     </button>}
+                    {m.viaFallback && <span className="fallback-note">↪ 예비 모델에서 답변했어요</span>}
                   </div>
                 </div>
               ))}
               {busy && <div className="message-row assistant"><DaiFace small/>
                 <div className="bubble thinking"><span/><span/><span/></div></div>}
-              {error && <div className="error-box">⚠ {error}
-                <button disabled={busy} onClick={() => send(undefined, true)}>다시 시도</button>
+              {error?.chatId === activeId && <div className={"error-box" + (error.temporary ? " error-overload" : "")} role="alert">
+                <div className="error-icon" aria-hidden="true">{error.temporary ? "💫" : "⚠️"}</div>
+                <div className="error-content">
+                  <strong>{error.temporary ? "다이가 잠깐 과부하 상태예요!" : "응답을 받지 못했어요."}</strong>
+                  <p>{error.text}</p>
+                  {error.temporary && <small>자동 재시도를 진행했지만 서버가 아직 바빠요.</small>}
+                </div>
+                <button type="button" disabled={busy || active.messages.at(-1)?.role !== "user"}
+                  onClick={() => send(undefined, true)}>↻ 다시 시도</button>
               </div>}
               <div ref={end}/>
             </section>

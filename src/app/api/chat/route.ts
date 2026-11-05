@@ -29,6 +29,36 @@ function isTrialEnabled(): boolean {
     Boolean(process.env.HF_TOKEN?.trim());
 }
 
+type ModelAttempt = { status: number; reply?: string; networkError?: boolean };
+
+/** One upstream request consumes one of the three trial calls, including retries. */
+async function askHuggingFace(model: string, recent: Message[]): Promise<ModelAttempt> {
+  if (trialCalls >= TRIAL_CALL_LIMIT) return { status: 429 };
+  trialCalls += 1;
+  try {
+    const result = await fetch("https://router.huggingface.co/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + process.env.HF_TOKEN!.trim(),
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "system", content: SYSTEM_PROMPT }, ...recent],
+        max_tokens: 600
+      }),
+      signal: AbortSignal.timeout(30000),
+      cache: "no-store"
+    });
+    if (!result.ok) return { status: result.status };
+    const data = await result.json() as { choices?: { message?: { content?: string } }[] };
+    const reply = data.choices?.[0]?.message?.content?.trim();
+    return reply ? { status: 200, reply } : { status: 502 };
+  } catch {
+    return { status: 502, networkError: true };
+  }
+}
+
 export async function GET() {
   return NextResponse.json(
     { source: isTrialEnabled() ? "huggingface" : "preview" },
@@ -60,43 +90,46 @@ export async function POST(request: Request) {
   if (trialCalls >= TRIAL_CALL_LIMIT) return NextResponse.json(
     { error: "시험 모드의 서버 실행당 요청 제한(3회)에 도달했습니다." }, { status: 429 }
   );
-  trialCalls += 1;
 
-  try {
-    const result = await fetch("https://router.huggingface.co/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer " + process.env.HF_TOKEN!.trim(),
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: process.env.HF_MODEL?.trim() || "Qwen/Qwen3-8B:cheapest",
-        messages: [{ role: "system", content: SYSTEM_PROMPT }, ...recent],
-        max_tokens: 600
-      }),
-      signal: AbortSignal.timeout(30000),
-      cache: "no-store"
-    });
-    if (!result.ok) {
-      const reason = result.status === 402
-        ? "Hugging Face 크레딧이 부족합니다. 유료 결제를 진행하기 전에 잔액을 확인해 주세요."
-        : result.status === 429
-          ? "Hugging Face 요청 한도에 도달했습니다. 이용 한도를 확인해 주세요."
-          : result.status === 401 || result.status === 403
-            ? "Hugging Face 토큰과 Inference Providers 권한을 확인해 주세요."
-            : result.status === 400 || result.status === 404
-              ? "선택한 Hugging Face 모델을 사용할 수 없습니다. HF_MODEL 설정을 확인해 주세요."
-              : "Hugging Face AI 서버 응답 오류 (" + result.status + ")";
-      return NextResponse.json({ error: reason }, { status: 502 });
-    }
-    const data = await result.json() as { choices?: { message?: { content?: string } }[] };
-    const reply = data.choices?.[0]?.message?.content?.trim();
-    if (!reply) return NextResponse.json({ error: "AI 응답이 비어 있습니다." }, { status: 502 });
-    return NextResponse.json({ reply, source: "huggingface" },
-      { headers: { "Cache-Control": "no-store" } });
-  } catch {
-    return NextResponse.json({
-      error: "Hugging Face 연결 시간이 초과되었거나 네트워크 오류가 발생했습니다."
-    }, { status: 502 });
+  const primary = process.env.HF_MODEL?.trim() || "Qwen/Qwen3-8B:cheapest";
+  const fallback = process.env.HF_FALLBACK_MODEL?.trim();
+  let usedFallback = false;
+  let attempt = await askHuggingFace(primary, recent);
+
+  // A transient 503 gets one quiet retry; neither a quota error nor a bad token does.
+  // Every attempt, including the optional fallback, counts toward TRIAL_CALL_LIMIT.
+  if (attempt.status === 503 && trialCalls < TRIAL_CALL_LIMIT) {
+    await new Promise<void>(resolve => setTimeout(resolve, 700));
+    attempt = await askHuggingFace(primary, recent);
   }
+  if (attempt.status === 503 && fallback && fallback !== primary &&
+      trialCalls < TRIAL_CALL_LIMIT) {
+    usedFallback = true;
+    attempt = await askHuggingFace(fallback, recent);
+  }
+
+  if (attempt.reply) return NextResponse.json(
+    { reply: attempt.reply, source: "huggingface", fallbackUsed: usedFallback },
+    { headers: { "Cache-Control": "no-store" } }
+  );
+
+  const reason = attempt.status === 503
+    ? "지금 다이에게 요청이 몰려 AI 서버가 바빠요. 잠시 후 다시 시도해 주세요."
+    : attempt.status === 402
+      ? "Hugging Face 크레딧이 부족합니다. 유료 결제를 진행하기 전에 잔액을 확인해 주세요."
+      : attempt.status === 429
+        ? "Hugging Face 요청 한도에 도달했습니다. 이용 한도를 확인해 주세요."
+        : attempt.status === 401 || attempt.status === 403
+          ? "Hugging Face 토큰과 Inference Providers 권한을 확인해 주세요."
+          : attempt.status === 400 || attempt.status === 404
+            ? "선택한 Hugging Face 모델을 사용할 수 없습니다. HF_MODEL 설정을 확인해 주세요."
+            : attempt.networkError
+              ? "Hugging Face 연결 시간이 초과되었거나 네트워크 오류가 발생했습니다."
+              : "Hugging Face AI 서버 응답 오류 (" + attempt.status + ")";
+  return NextResponse.json({
+    error: reason, code: attempt.status === 503 ? "high_demand" : "provider_error"
+  }, {
+    status: attempt.status === 503 ? 503 : attempt.status === 429 ? 429 : 502,
+    headers: { "Cache-Control": "no-store" }
+  });
 }
