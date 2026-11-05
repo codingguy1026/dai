@@ -70,7 +70,7 @@ export async function POST(request: Request) {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: process.env.HF_MODEL?.trim() || "Qwen/Qwen3-8B:cheapest",
+        model: process.env.HF_MODEL?.trim() || "Qwen/Qwen3.5-9B:cheapest",
         messages: [{ role: "system", content: SYSTEM_PROMPT }, ...recent],
         max_tokens: 600
       }),
