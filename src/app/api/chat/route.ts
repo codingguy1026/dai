@@ -18,9 +18,17 @@ const SYSTEM_PROMPT = [
   "Respect privacy and provide age-appropriate, safe guidance."
 ].join(" ");
 
+// Trial only. Keep production in preview mode until authentication, request limits,
+// and billing safeguards are implemented. A token alone never enables paid calls.
+function isTrialEnabled(): boolean {
+  return process.env.NODE_ENV !== "production" &&
+    process.env.DAI_ENABLE_HF_API === "true" &&
+    Boolean(process.env.HF_TOKEN?.trim());
+}
+
 export async function GET() {
   return NextResponse.json(
-    { source: process.env.OPENAI_API_KEY?.trim() ? "openai" : "preview" },
+    { source: isTrialEnabled() ? "huggingface" : "preview" },
     { headers: { "Cache-Control": "no-store" } }
   );
 }
@@ -41,35 +49,46 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "대화 형식을 확인해 주세요." }, { status: 400 });
 
   const recent = (messages as Message[]).slice(-16);
-  const key = process.env.OPENAI_API_KEY?.trim();
-  if (!key) return NextResponse.json(
+  if (!isTrialEnabled()) return NextResponse.json(
     { reply: getDemoReply(recent[recent.length - 1].content), source: "preview" },
     { headers: { "Cache-Control": "no-store" } }
   );
 
   try {
-    const result = await fetch("https://api.openai.com/v1/chat/completions", {
+    const result = await fetch("https://router.huggingface.co/v1/chat/completions", {
       method: "POST",
-      headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
+      headers: {
+        Authorization: "Bearer " + process.env.HF_TOKEN!.trim(),
+        "Content-Type": "application/json"
+      },
       body: JSON.stringify({
-        model: process.env.OPENAI_MODEL?.trim() || "gpt-4.1-mini",
+        model: process.env.HF_MODEL?.trim() || "Qwen/Qwen3-8B:cheapest",
         messages: [{ role: "system", content: SYSTEM_PROMPT }, ...recent],
-        max_completion_tokens: 800
+        max_tokens: 600
       }),
       signal: AbortSignal.timeout(30000),
       cache: "no-store"
     });
     if (!result.ok) {
-      const reason = result.status === 429 ? "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요." :
-        (result.status === 401 || result.status === 403) ? "서버의 AI 연결 설정을 확인해 주세요." :
-        "AI 서버 응답 오류 (" + result.status + ")";
-      return NextResponse.json({ error: reason }, { status: result.status === 429 ? 429 : 502 });
+      const reason = result.status === 402
+        ? "Hugging Face 크레딧이 부족합니다. 유료 결제를 진행하기 전에 잔액을 확인해 주세요."
+        : result.status === 429
+          ? "Hugging Face 요청 한도에 도달했습니다. 이용 한도를 확인해 주세요."
+          : result.status === 401 || result.status === 403
+            ? "Hugging Face 토큰과 Inference Providers 권한을 확인해 주세요."
+            : result.status === 400 || result.status === 404
+              ? "선택한 Hugging Face 모델을 사용할 수 없습니다. HF_MODEL 설정을 확인해 주세요."
+              : "Hugging Face AI 서버 응답 오류 (" + result.status + ")";
+      return NextResponse.json({ error: reason }, { status: 502 });
     }
     const data = await result.json() as { choices?: { message?: { content?: string } }[] };
     const reply = data.choices?.[0]?.message?.content?.trim();
     if (!reply) return NextResponse.json({ error: "AI 응답이 비어 있습니다." }, { status: 502 });
-    return NextResponse.json({ reply, source: "openai" }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json({ reply, source: "huggingface" },
+      { headers: { "Cache-Control": "no-store" } });
   } catch {
-    return NextResponse.json({ error: "연결 시간이 초과되었거나 네트워크 오류가 발생했습니다." }, { status: 502 });
+    return NextResponse.json({
+      error: "Hugging Face 연결 시간이 초과되었거나 네트워크 오류가 발생했습니다."
+    }, { status: 502 });
   }
 }
