@@ -16,5 +16,5 @@ export function getDemoReply(message: string): string {
   if (/안녕|하이|hello|hi/.test(m)) {
     return "안녕하세요. 다이입니다. 무엇을 도와드릴까요? 현재는 AI API가 연결되지 않아 예시 응답을 제공하고 있습니다.";
   }
-  return "현재는 실제 AI가 아닌 예시 응답을 제공하고 있습니다. 자유로운 대화를 사용하려면 서버에 OpenAI API 키를 설정해야 합니다.";
+  return "현재는 실제 AI가 아닌 예시 응답을 제공하고 있습니다. Hugging Face 시험 연결이 활성화되면 AI 답변을 이용할 수 있습니다.";
 }
