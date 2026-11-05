@@ -38,7 +38,7 @@ npm run dev
 
 ```env
 HF_TOKEN=여기에_Hugging_Face_토큰
-HF_MODEL=Qwen/Qwen3-8B:cheapest
+HF_MODEL=Qwen/Qwen3.5-9B:cheapest
 DAI_ENABLE_HF_API=true
 ```
 
