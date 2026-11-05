@@ -1,10 +1,13 @@
+import { createServerClient } from "@supabase/ssr";
+import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { getDemoReply } from "@/lib/demo";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 type Message = { role: "user" | "assistant"; content: string };
-
+type Attempt = { status: number; reply?: string; networkError?: boolean };
+type Reserve = () => Promise<boolean>;
 const SYSTEM_PROMPT = [
   "You are Dai (다이), a Korean-first general-purpose AI assistant for the Drawing ecosystem.",
   "Respond naturally, clearly, and calmly. Default to polite Korean and adapt to the user's language.",
@@ -18,58 +21,108 @@ const SYSTEM_PROMPT = [
   "Respect privacy and provide age-appropriate, safe guidance."
 ].join(" ");
 
-// Trial only. Keep production in preview mode until authentication, persistent
-// request limits, and billing safeguards are implemented. A token alone never enables paid calls.
-// This best-effort in-memory cap resets on server restart and is NOT a billing cap.
-let trialCalls = 0;
-const TRIAL_CALL_LIMIT = 3;
-function isTrialEnabled(): boolean {
-  return process.env.NODE_ENV !== "production" &&
-    process.env.DAI_ENABLE_HF_API === "true" &&
-    Boolean(process.env.HF_TOKEN?.trim());
+// Never activate paid network calls from an API key alone.
+const DEV_CAP = 3;
+let devCalls = 0;
+function enabled(): boolean {
+  if (process.env.DAI_ENABLE_GEMINI_API !== "true" || !process.env.GEMINI_API_KEY?.trim()) return false;
+  if (process.env.NODE_ENV !== "production") return true;
+  return process.env.DAI_ENABLE_GEMINI_PRODUCTION === "true" &&
+    Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY);
 }
-
-type ModelAttempt = { status: number; reply?: string; networkError?: boolean };
-
-/** One upstream request consumes one of the three trial calls, including retries. */
-async function askHuggingFace(model: string, recent: Message[]): Promise<ModelAttempt> {
-  if (trialCalls >= TRIAL_CALL_LIMIT) return { status: 429 };
-  trialCalls += 1;
+function modelId(value: string | undefined): string | null {
+  const id = (value?.trim() || "gemini-2.5-flash").replace(/^models\//, "");
+  return /^[a-zA-Z0-9][a-zA-Z0-9._-]{1,99}$/.test(id) ? id : null;
+}
+function fail(error: string, status: number, code = "provider_error") {
+  return NextResponse.json({ error, code }, {
+    status, headers: { "Cache-Control": "private, no-store" }
+  });
+}
+async function productionReserve(): Promise<Reserve | NextResponse> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+  if (!url || !key) return fail("Drawing ID 서버 설정이 필요해요.", 503, "configuration");
   try {
-    const result = await fetch("https://router.huggingface.co/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer " + process.env.HF_TOKEN!.trim(),
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: "system", content: SYSTEM_PROMPT }, ...recent],
-        max_tokens: 600
-      }),
-      signal: AbortSignal.timeout(30000),
-      cache: "no-store"
+    const jar = await cookies();
+    const supabase = createServerClient(url, key, {
+      cookies: {
+        getAll() { return jar.getAll(); },
+        setAll(items) { items.forEach(({ name, value, options }) => jar.set(name, value, options)); }
+      }
     });
-    if (!result.ok) return { status: result.status };
-    const data = await result.json() as { choices?: { message?: { content?: string } }[] };
-    const reply = data.choices?.[0]?.message?.content?.trim();
-    return reply ? { status: 200, reply } : { status: 502 };
+    // Server-side user verification, never trust cookie content alone.
+    const { data: { user }, error } = await supabase.auth.getUser();
+    if (error || !user || user.is_anonymous)
+      return fail("실제 AI를 이용하려면 Drawing ID에 로그인해 주세요.", 401, "login_required");
+    return async () => {
+      try {
+        const { data, error } = await supabase.rpc("consume_dai_api_quota");
+        return !error && data === true;
+      } catch { return false; }
+    };
   } catch {
-    return { status: 502, networkError: true };
+    return fail("Drawing ID 인증 서버에 연결하지 못했어요.", 503, "authentication");
   }
 }
-
-export async function GET() {
-  return NextResponse.json(
-    { source: isTrialEnabled() ? "huggingface" : "preview" },
-    { headers: { "Cache-Control": "no-store" } }
-  );
+function localReserve(): Reserve {
+  return async () => {
+    if (devCalls >= DEV_CAP) return false;
+    devCalls += 1;
+    return true;
+  };
 }
-
+function geminiTurns(messages: Message[]) {
+  const turns: { role: "user" | "model"; parts: { text: string }[] }[] = [];
+  for (const m of messages) {
+    const role = m.role === "assistant" ? "model" : "user";
+    const last = turns.at(-1);
+    if (last?.role === role) last.parts[0].text += "\n" + m.content;
+    else turns.push({ role, parts: [{ text: m.content }] });
+  }
+  return turns;
+}
+async function askGemini(model: string, messages: Message[]): Promise<Attempt> {
+  try {
+    const generationConfig: {
+      maxOutputTokens: number; temperature: number; thinkingConfig?: { thinkingBudget: number };
+    } = { maxOutputTokens: 900, temperature: 0.7 };
+    if (model.startsWith("gemini-2.5-flash")) generationConfig.thinkingConfig = { thinkingBudget: 0 };
+    const response = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/" +
+        encodeURIComponent(model) + ":generateContent", {
+        method: "POST",
+        headers: {
+          "x-goog-api-key": process.env.GEMINI_API_KEY!.trim(),
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+          contents: geminiTurns(messages),
+          generationConfig
+        }),
+        signal: AbortSignal.timeout(30000),
+        cache: "no-store"
+      }
+    );
+    if (!response.ok) return { status: response.status };
+    const data = await response.json() as {
+      candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] } }[]
+    };
+    // Never display internal thought parts.
+    const reply = data.candidates?.[0]?.content?.parts
+      ?.filter(part => !part.thought).map(part => part.text || "").join("").trim();
+    return reply ? { status: 200, reply } : { status: 502 };
+  } catch { return { status: 504, networkError: true }; }
+}
+export async function GET() {
+  return NextResponse.json({ source: enabled() ? "gemini" : "preview" },
+    { headers: { "Cache-Control": "private, no-store" } });
+}
 export async function POST(request: Request) {
   let value: unknown;
   try { value = await request.json(); }
-  catch { return NextResponse.json({ error: "올바른 JSON 요청이 아닙니다." }, { status: 400 }); }
+  catch { return fail("올바른 JSON 요청이 아닙니다.", 400, "invalid_request"); }
   const messages = (value as { messages?: unknown } | null)?.messages;
   const valid = Array.isArray(messages) && messages.length > 0 && messages.length <= 30 &&
     messages.every((m: unknown) => {
@@ -79,57 +132,48 @@ export async function POST(request: Request) {
         typeof x.content === "string" && x.content.trim().length > 0 && x.content.length <= 3000;
     });
   if (!valid || (messages as Message[]).at(-1)?.role !== "user")
-    return NextResponse.json({ error: "대화 형식을 확인해 주세요." }, { status: 400 });
-
+    return fail("대화 형식을 확인해 주세요.", 400, "invalid_request");
   const recent = (messages as Message[]).slice(-16);
-  if (!isTrialEnabled()) return NextResponse.json(
-    { reply: getDemoReply(recent[recent.length - 1].content), source: "preview" },
-    { headers: { "Cache-Control": "no-store" } }
+  if (!enabled()) return NextResponse.json(
+    { reply: getDemoReply(recent.at(-1)!.content), source: "preview" },
+    { headers: { "Cache-Control": "private, no-store" } }
   );
 
-  if (trialCalls >= TRIAL_CALL_LIMIT) return NextResponse.json(
-    { error: "시험 모드의 서버 실행당 요청 제한(3회)에 도달했습니다." }, { status: 429 }
-  );
+  const primary = modelId(process.env.GEMINI_MODEL);
+  const rawFallback = process.env.GEMINI_FALLBACK_MODEL?.trim();
+  const fallback = rawFallback ? modelId(rawFallback) : null;
+  if (!primary || (rawFallback && !fallback))
+    return fail("Gemini 모델 설정이 올바르지 않아요.", 500, "configuration");
 
-  const primary = process.env.HF_MODEL?.trim() || "Qwen/Qwen3-8B:cheapest";
-  const fallback = process.env.HF_FALLBACK_MODEL?.trim();
-  let usedFallback = false;
-  let attempt = await askHuggingFace(primary, recent);
-
-  // A transient 503 gets one quiet retry; neither a quota error nor a bad token does.
-  // Every attempt, including the optional fallback, counts toward TRIAL_CALL_LIMIT.
-  if (attempt.status === 503 && trialCalls < TRIAL_CALL_LIMIT) {
+  const reserve: Reserve | NextResponse = process.env.NODE_ENV === "production"
+    ? await productionReserve() : localReserve();
+  if (reserve instanceof NextResponse) return reserve;
+  async function attempt(model: string): Promise<Attempt> {
+    return await reserve() ? askGemini(model, recent) : { status: 429 };
+  }
+  let result = await attempt(primary!);
+  let fallbackUsed = false;
+  if (result.status === 503) {
     await new Promise<void>(resolve => setTimeout(resolve, 700));
-    attempt = await askHuggingFace(primary, recent);
+    result = await attempt(primary!);
   }
-  if (attempt.status === 503 && fallback && fallback !== primary &&
-      trialCalls < TRIAL_CALL_LIMIT) {
-    usedFallback = true;
-    attempt = await askHuggingFace(fallback, recent);
+  if (result.status === 503 && fallback && fallback !== primary) {
+    fallbackUsed = true;
+    result = await attempt(fallback);
   }
-
-  if (attempt.reply) return NextResponse.json(
-    { reply: attempt.reply, source: "huggingface", fallbackUsed: usedFallback },
-    { headers: { "Cache-Control": "no-store" } }
+  if (result.reply) return NextResponse.json(
+    { reply: result.reply, source: "gemini", fallbackUsed },
+    { headers: { "Cache-Control": "private, no-store" } }
   );
-
-  const reason = attempt.status === 503
-    ? "지금 다이에게 요청이 몰려 AI 서버가 바빠요. 잠시 후 다시 시도해 주세요."
-    : attempt.status === 402
-      ? "Hugging Face 크레딧이 부족합니다. 유료 결제를 진행하기 전에 잔액을 확인해 주세요."
-      : attempt.status === 429
-        ? "Hugging Face 요청 한도에 도달했습니다. 이용 한도를 확인해 주세요."
-        : attempt.status === 401 || attempt.status === 403
-          ? "Hugging Face 토큰과 Inference Providers 권한을 확인해 주세요."
-          : attempt.status === 400 || attempt.status === 404
-            ? "선택한 Hugging Face 모델을 사용할 수 없습니다. HF_MODEL 설정을 확인해 주세요."
-            : attempt.networkError
-              ? "Hugging Face 연결 시간이 초과되었거나 네트워크 오류가 발생했습니다."
-              : "Hugging Face AI 서버 응답 오류 (" + attempt.status + ")";
-  return NextResponse.json({
-    error: reason, code: attempt.status === 503 ? "high_demand" : "provider_error"
-  }, {
-    status: attempt.status === 503 ? 503 : attempt.status === 429 ? 429 : 502,
-    headers: { "Cache-Control": "no-store" }
-  });
+  if (result.status === 429)
+    return fail("다이의 사용 가능 횟수 또는 Gemini 요청 한도에 도달했어요. 이용 한도를 확인해 주세요.", 429, "rate_limit");
+  if (result.status === 503)
+    return fail("으아아악! 지금 사람들이 너무 많이 말을 걸고 있어요! 🤯 잠시 후 다시 이야기해 주세요.", 503, "high_demand");
+  if (result.status === 400 || result.status === 404)
+    return fail("선택한 Gemini 모델을 사용할 수 없어요. GEMINI_MODEL을 확인해 주세요.", 502);
+  if (result.status === 401 || result.status === 403)
+    return fail("Gemini API 키 또는 프로젝트 권한을 확인해 주세요.", 502);
+  return fail(result.networkError
+    ? "Gemini 연결 시간이 초과됐어요. 잠시 후 다시 시도해 주세요."
+    : "Gemini가 답변을 생성하지 못했어요. 잠시 후 다시 시도해 주세요.", 502);
 }

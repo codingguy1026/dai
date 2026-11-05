@@ -62,7 +62,7 @@ export default function Home() {
     fetch("/api/chat", { cache: "no-store" })
       .then(r => { if (!r.ok) throw new Error("status check failed"); return r.json(); })
       .then((data: { source?: string }) =>
-        setConnection(data.source === "huggingface" ? "online" : "preview"))
+        setConnection(data.source === "gemini" ? "online" : "preview"))
       .catch(() => setConnection("offline"));
   }, []);
 
@@ -146,7 +146,7 @@ export default function Home() {
       });
       const data = await response.json() as {
         reply?: string; error?: string; code?: string;
-        source?: "huggingface" | "preview"; fallbackUsed?: boolean
+        source?: "gemini" | "preview"; fallbackUsed?: boolean
       };
       if (!response.ok || !data.reply) {
         setError({
@@ -161,8 +161,8 @@ export default function Home() {
       };
       setChats(old => old.map(c => c.id === chatId
         ? { ...c, updated: Date.now(), messages: [...c.messages, reply] } : c));
-      if (data.source === "huggingface" || data.source === "preview")
-        setConnection(data.source === "huggingface" ? "online" : "preview");
+      if (data.source === "gemini" || data.source === "preview")
+        setConnection(data.source === "gemini" ? "online" : "preview");
     } catch (e) {
       setError({
         chatId, text: e instanceof Error ? e.message : "연결에 문제가 발생했습니다.",
@@ -204,11 +204,11 @@ export default function Home() {
         <header className="topbar">
           <div className="top-left">
             <button className="menu" onClick={() => setSidebar(true)} aria-label="메뉴 열기">☰</button>
-            <span className="top-name">Dai <span className="version">v0.2</span></span>
+            <span className="top-name">Dai <span className="version">v0.3</span></span>
           </div>
           <div className={"status " + connection}>
             <span className="status-dot"/>
-            {connection === "online" ? "Hugging Face 시험 연결" : connection === "preview" ? "예시 응답" : "연결 확인 필요"}
+            {connection === "online" ? "Gemini 연결 준비됨" : connection === "preview" ? "예시 응답" : "연결 확인 필요"}
           </div>
         </header>
 
@@ -262,7 +262,7 @@ export default function Home() {
 
         <div className="composer-wrap">
           {connection === "preview" && <div className="demo-notice">
-            현재 AI API가 연결되지 않아 정해진 예시 답변을 보여줍니다.
+            Gemini API가 꺼져 있어 예시 응답을 보여줍니다. 서버 환경 설정을 확인해 주세요.
           </div>}
           <form className="composer" onSubmit={e => { e.preventDefault(); send(); }}>
             <textarea ref={composer} value={input} maxLength={2000}
