@@ -6,7 +6,7 @@ import { getDemoReply } from "@/lib/demo";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 type Message = { role: "user" | "assistant"; content: string };
-type Attempt = { status: number; reply?: string; networkError?: boolean };
+type Attempt = { status: number; reply?: string; networkError?: boolean; providerStatus?: string };
 type Reserve = () => Promise<boolean>;
 const SYSTEM_PROMPT = [
   "You are Dai (다이), a Korean-first general-purpose AI assistant for the Drawing ecosystem.",
@@ -31,7 +31,7 @@ function enabled(): boolean {
     Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY);
 }
 function modelId(value: string | undefined): string | null {
-  const id = (value?.trim() || "gemini-2.5-flash").replace(/^models\//, "");
+  const id = (value?.trim() || "gemini-3.5-flash-lite").replace(/^models\//, "");
   return /^[a-zA-Z0-9][a-zA-Z0-9._-]{1,99}$/.test(id) ? id : null;
 }
 function fail(error: string, status: number, code = "provider_error") {
@@ -105,7 +105,19 @@ async function askGemini(model: string, messages: Message[]): Promise<Attempt> {
         cache: "no-store"
       }
     );
-    if (!response.ok) return { status: response.status };
+    if (!response.ok) {
+      // Provider errors can contain request details. Return/log only the safe
+      // HTTP code and canonical status; never expose the raw body or API key.
+      let providerStatus: string | undefined;
+      try {
+        const body = await response.json() as { error?: { status?: unknown } };
+        const raw = body.error?.status;
+        if (typeof raw === "string" && /^[A-Z_]{3,40}$/.test(raw))
+          providerStatus = raw;
+      } catch { /* An upstream error may not have JSON body. */ }
+      console.warn("Gemini upstream failure", { model, httpStatus: response.status, providerStatus });
+      return { status: response.status, providerStatus };
+    }
     const data = await response.json() as {
       candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] } }[]
     };
@@ -170,8 +182,16 @@ export async function POST(request: Request) {
     return fail("다이의 사용 가능 횟수 또는 Gemini 요청 한도에 도달했어요. 이용 한도를 확인해 주세요.", 429, "rate_limit");
   if (result.status === 503)
     return fail("으아아악! 지금 사람들이 너무 많이 말을 걸고 있어요! 🤯 잠시 후 다시 이야기해 주세요.", 503, "high_demand");
-  if (result.status === 400 || result.status === 404)
-    return fail("선택한 Gemini 모델을 사용할 수 없어요. GEMINI_MODEL을 확인해 주세요.", 502);
+  if (result.status === 400) {
+    const reason = result.providerStatus === "FAILED_PRECONDITION"
+      ? "Gemini 프로젝트의 무료 티어 또는 사용 조건을 확인해 주세요."
+      : "요청 형식이나 생성 옵션이 해당 모델과 호환되지 않을 수 있어요.";
+    return fail("Gemini 요청 오류 (400). " + reason +
+      " 서버 로그에 기록된 Gemini 오류 상태를 확인해 주세요.", 502, "gemini_invalid_request");
+  }
+  if (result.status === 404)
+    return fail("Gemini 모델 접근 오류 (404). 현재 프로젝트에서 이용 가능한 모델인지 확인해 주세요. 신규 프로젝트라면 GEMINI_MODEL=gemini-3.5-flash-lite를 권장해요.",
+      502, "gemini_model_unavailable");
   if (result.status === 401 || result.status === 403)
     return fail("Gemini API 키 또는 프로젝트 권한을 확인해 주세요.", 502);
   return fail(result.networkError

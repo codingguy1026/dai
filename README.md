@@ -24,11 +24,13 @@ npm run dev
 
 ```env
 GEMINI_API_KEY=본인의_비공개_Gemini_API_키
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-3.5-flash-lite
 DAI_ENABLE_GEMINI_API=true
 # 선택: 503 오류가 2번 반복될 때만 시도하는 예비 모델
 GEMINI_FALLBACK_MODEL=
 ```
+
+Google은 신규 프로젝트의 Gemini 2.5 모델 접근을 제한하고 있으므로 기본 모델을 `gemini-3.5-flash-lite`로 변경했습니다. 기존 `.env.local`은 git pull로 업데이트되지 않으니 **직접 GEMINI_MODEL을 변경**하고 개발 서버를 재시작해야 합니다. HTTP 400(요청 오류)과 404(모델 접근 오류)는 별도 메시지로 보여주며, 서버 로그에는 오류 코드만 표시하고 API 키나 원본 오류 본문은 출력하지 않습니다.
 
 개발 환경에서는 서버 프로세스당 AI API 호출을 3회로 제한합니다. **재시도/예비 모델 호출도 각각 1회로 계산**되며 서버 재시작 시 초기화됩니다. 따라서 이 제한은 비용 상한이 아닙니다.
 
