@@ -34,6 +34,18 @@ Google은 신규 프로젝트의 Gemini 2.5 모델 접근을 제한하고 있으
 
 개발 환경에서는 서버 프로세스당 AI API 호출을 3회로 제한합니다. **재시도/예비 모델 호출도 각각 1회로 계산**되며 서버 재시작 시 초기화됩니다. 따라서 이 제한은 비용 상한이 아닙니다.
 
+## Gemini 404 진단: 모델 이름을 추측하지 마세요
+
+`git pull`을 실행한 후 Codespaces 프로젝트 루트에서 다음을 실행하세요.
+
+```bash
+npm run gemini:models
+```
+
+`.env.local`에서 실행 중인 모델 설정을 읽고, Gemini 공식 `models.list` API를 사용하여 **해당 키에 노출되는 `generateContent` 모델만** 출력합니다. API 키나 원본 서버 오류 본문은 표시하지 않습니다. 이 조회는 실제 텍스트 생성 호출이 아닙니다.
+
+설정 모델이 목록에 없다면, 목록의 해당 프로젝트에서 사용 가능한 텍스트 모델 하나를 `.env.local`의 `GEMINI_MODEL`에 넣고 `npm run dev`를 다시 실행하세요. 그래도 404가 발생한다면 서버 터미널의 `Gemini upstream failure` 오류 코드와 실제로 적용된 모델 이름을 확인해 주세요. **API 키는 공개하지 마세요.**
+
 ## 공개 배포에서 예시 응답 끄기
 
 서버 측 비밀 환경 변수에 `GEMINI_API_KEY`, `DAI_ENABLE_GEMINI_API=true`, `DAI_ENABLE_GEMINI_PRODUCTION=true`를 지정합니다. **키가 있다고 자동 활성화되지 않으며**, 아래 보안 설정도 필요합니다.
